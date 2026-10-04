@@ -69,6 +69,17 @@ YES_NO_LETTER = {"No": "N", "Yes": "Y"}
 @st.cache_resource(show_spinner="Setting things up (first load only, about a minute)...")
 def train_all_models():
     df = pd.read_csv(DATA_PATH)
+
+    # Remove duplicate patient records before splitting. Combined heart disease
+    # datasets (merged from multiple clinical sources) often contain exact
+    # duplicate rows; if a duplicate ends up in both the training and test
+    # sets, a model can "memorise" it rather than genuinely generalise,
+    # producing an inflated, untrustworthy score (most visible as Decision
+    # Tree scoring unrealistically close to 100%).
+    n_before = len(df)
+    df = df.drop_duplicates().reset_index(drop=True)
+    n_duplicates_removed = n_before - len(df)
+
     X = df.drop(columns=["HeartDisease"])
     y = df["HeartDisease"].astype(int)
 
@@ -166,10 +177,10 @@ def train_all_models():
         model.fit(X_all_t, y)
 
     metrics_df = pd.DataFrame(metrics).sort_values("F1-score", ascending=False).reset_index(drop=True)
-    return preprocessor, final_base_models, meta_model, metrics_df
+    return preprocessor, final_base_models, meta_model, metrics_df, n_duplicates_removed
 
 
-preprocessor, base_models, meta_model, metrics_df = train_all_models()
+preprocessor, base_models, meta_model, metrics_df, n_duplicates_removed = train_all_models()
 best_model_name = metrics_df.iloc[0]["Model"]
 
 # ---------------------------------------------------------------------------
@@ -315,6 +326,15 @@ with tab2:
         display_df[c] = display_df[c].map(lambda x: f"{x:.3f}")
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     st.caption(f"Best-performing model on this run: **{best_model_name}** -- this is the model used for your result above.")
+
+    if n_duplicates_removed > 0:
+        st.info(
+            f"ℹ️ {n_duplicates_removed} duplicate patient record(s) were found in the dataset and "
+            "removed before training. This prevents a model from simply memorising a record it has "
+            "already seen if that same record also appears in the test set -- which would otherwise "
+            "produce an unrealistically high, untrustworthy score (most noticeable as Decision Tree "
+            "scoring close to 100%)."
+        )
 
     with st.expander("What do Accuracy, Precision, Recall, F1-score and ROC-AUC mean?"):
         st.markdown(
