@@ -95,15 +95,15 @@ def train_all_models():
                 df[col] = df[col].map(mapping)
                 decoded_columns.append(col)
 
-    # Remove duplicate patient records before splitting. Combined heart disease
-    # datasets (merged from multiple clinical sources) often contain exact
-    # duplicate rows; if a duplicate ends up in both the training and test
-    # sets, a model can "memorise" it rather than genuinely generalise,
-    # producing an inflated, untrustworthy score (most visible as Decision
-    # Tree scoring unrealistically close to 100%).
-    n_before = len(df)
-    df = df.drop_duplicates().reset_index(drop=True)
-    n_duplicates_removed = n_before - len(df)
+    # NOTE: duplicate rows are intentionally NOT removed here. An earlier
+    # version of this app removed them, but on this dataset that turned out
+    # to break the class balance between "heart disease" and "no heart
+    # disease" (the duplication appears to be intentional, not accidental
+    # noise), which caused several models to collapse to predicting a single
+    # class. The official Chapter Three/Four results were also computed on
+    # the full, non-deduplicated dataset, so this keeps the deployed system
+    # consistent with the written report.
+    n_duplicates_removed = 0
 
     # Ensure the target is clean binary (0 = no heart disease, 1 = heart
     # disease present). Some versions of this dataset (e.g. the raw UCI/
@@ -139,6 +139,7 @@ def train_all_models():
         "n_missing_numeric_values_filled": int(n_missing_before_fill),
         "numeric_ranges": {c: [float(df[c].min()), float(df[c].max())] for c in NUMERIC_COLS},
         "categorical_values": {c: sorted(df[c].dropna().unique().tolist()) for c in CATEGORICAL_COLS},
+        "target_distribution": df["HeartDisease"].value_counts().to_dict(),
     }
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -418,6 +419,8 @@ with tab2:
 
     with st.expander("🔍 Dataset diagnostics (for checking data quality)"):
         st.write(f"Rows used for training/testing: **{diagnostics['n_rows']}**")
+        st.write("Target class balance (0 = no heart disease, 1 = heart disease):")
+        st.json({str(k): v for k, v in diagnostics["target_distribution"].items()})
         st.write("Numeric column ranges (min, max):")
         st.json({k: v for k, v in diagnostics["numeric_ranges"].items()})
         st.write("Categorical column values found:")
