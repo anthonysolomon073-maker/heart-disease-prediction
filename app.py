@@ -70,6 +70,31 @@ YES_NO_LETTER = {"No": "N", "Yes": "Y"}
 def train_all_models():
     df = pd.read_csv(DATA_PATH)
 
+    # Some mirrors of this dataset ship with the categorical columns already
+    # numerically encoded (e.g. via sklearn's LabelEncoder, which assigns
+    # integers in alphabetical order of the original category names) instead
+    # of the original text labels (M/F, ATA/NAP/ASY/TA, Normal/ST/LVH, Y/N).
+    # Logistic Regression in particular is sensitive to this, since it
+    # treats the numbers as having numeric order/magnitude rather than as
+    # unordered categories, which silently distorts its predictions. If a
+    # column is found to be purely numeric and its values exactly match this
+    # known encoding, it is decoded back to the original text labels before
+    # training, so results are consistent regardless of which version of the
+    # dataset is used.
+    LABEL_ENCODE_MAPS = {
+        "Sex": {0: "F", 1: "M"},
+        "ChestPainType": {0: "ASY", 1: "ATA", 2: "NAP", 3: "TA"},
+        "RestingECG": {0: "LVH", 1: "Normal", 2: "ST"},
+        "ExerciseAngina": {0: "N", 1: "Y"},
+    }
+    decoded_columns = []
+    for col, mapping in LABEL_ENCODE_MAPS.items():
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+            unique_vals = set(df[col].dropna().unique())
+            if unique_vals and unique_vals.issubset(set(mapping.keys())):
+                df[col] = df[col].map(mapping)
+                decoded_columns.append(col)
+
     # Remove duplicate patient records before splitting. Combined heart disease
     # datasets (merged from multiple clinical sources) often contain exact
     # duplicate rows; if a duplicate ends up in both the training and test
@@ -80,8 +105,41 @@ def train_all_models():
     df = df.drop_duplicates().reset_index(drop=True)
     n_duplicates_removed = n_before - len(df)
 
+    # Ensure the target is clean binary (0 = no heart disease, 1 = heart
+    # disease present). Some versions of this dataset (e.g. the raw UCI/
+    # Cleveland source) use a 0-4 severity scale instead of clean 0/1. If
+    # left as-is, scikit-learn would silently treat this as a 5-class
+    # problem, which breaks predict_proba and every metric computed below
+    # in ways that look like random, inconsistent model performance.
+    raw_target_values = sorted(df["HeartDisease"].dropna().unique().tolist())
+    target_was_binarized = not set(raw_target_values).issubset({0, 1})
+    if target_was_binarized:
+        df["HeartDisease"] = (df["HeartDisease"] > 0).astype(int)
+
+    # Make sure every numeric column is actually numeric. If a column
+    # contains a stray non-numeric marker (e.g. "?", used by some raw UCI
+    # exports for missing values), pandas silently reads the whole column
+    # as text, which breaks StandardScaler for Logistic Regression while
+    # tree-based models may partially tolerate it -- producing exactly the
+    # kind of lopsided results (one model collapsing, others fine) this
+    # dataset has produced before.
+    for col in NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    n_missing_before_fill = df[NUMERIC_COLS].isna().sum().sum()
+    df[NUMERIC_COLS] = df[NUMERIC_COLS].fillna(df[NUMERIC_COLS].median())
+
     X = df.drop(columns=["HeartDisease"])
     y = df["HeartDisease"].astype(int)
+
+    diagnostics = {
+        "n_rows": len(df),
+        "raw_target_values": raw_target_values,
+        "target_was_binarized": target_was_binarized,
+        "n_missing_numeric_values_filled": int(n_missing_before_fill),
+        "numeric_ranges": {c: [float(df[c].min()), float(df[c].max())] for c in NUMERIC_COLS},
+        "categorical_values": {c: sorted(df[c].dropna().unique().tolist()) for c in CATEGORICAL_COLS},
+    }
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
@@ -177,10 +235,11 @@ def train_all_models():
         model.fit(X_all_t, y)
 
     metrics_df = pd.DataFrame(metrics).sort_values("F1-score", ascending=False).reset_index(drop=True)
-    return preprocessor, final_base_models, meta_model, metrics_df, n_duplicates_removed
+    return preprocessor, final_base_models, meta_model, metrics_df, n_duplicates_removed, decoded_columns, diagnostics
 
 
-preprocessor, base_models, meta_model, metrics_df, n_duplicates_removed = train_all_models()
+(preprocessor, base_models, meta_model, metrics_df,
+ n_duplicates_removed, decoded_columns, diagnostics) = train_all_models()
 best_model_name = metrics_df.iloc[0]["Model"]
 
 # ---------------------------------------------------------------------------
@@ -335,6 +394,34 @@ with tab2:
             "produce an unrealistically high, untrustworthy score (most noticeable as Decision Tree "
             "scoring close to 100%)."
         )
+
+    if decoded_columns:
+        st.info(
+            f"ℹ️ The following column(s) were found in a numerically-encoded form in the uploaded "
+            f"dataset and were automatically converted back to their original category labels "
+            f"before training, to keep results consistent: {', '.join(decoded_columns)}."
+        )
+
+    if diagnostics["target_was_binarized"]:
+        st.warning(
+            f"⚠️ The HeartDisease column in the uploaded dataset contained values "
+            f"{diagnostics['raw_target_values']}, not clean 0/1. It was automatically converted "
+            f"so that any value greater than 0 is treated as 'heart disease present' (1) and 0 "
+            f"is treated as 'no heart disease' (0), consistent with Chapter Three."
+        )
+
+    if diagnostics["n_missing_numeric_values_filled"] > 0:
+        st.warning(
+            f"⚠️ {diagnostics['n_missing_numeric_values_filled']} missing or non-numeric value(s) "
+            "were found in the numeric columns and filled with that column's median value."
+        )
+
+    with st.expander("🔍 Dataset diagnostics (for checking data quality)"):
+        st.write(f"Rows used for training/testing: **{diagnostics['n_rows']}**")
+        st.write("Numeric column ranges (min, max):")
+        st.json({k: v for k, v in diagnostics["numeric_ranges"].items()})
+        st.write("Categorical column values found:")
+        st.json(diagnostics["categorical_values"])
 
     with st.expander("What do Accuracy, Precision, Recall, F1-score and ROC-AUC mean?"):
         st.markdown(
