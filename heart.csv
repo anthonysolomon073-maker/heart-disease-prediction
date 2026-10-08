@@ -2941,4 +2941,4 @@ Age,Sex,ChestPainType,RestingBP,Cholesterol,FastingBS,RestingECG,MaxHR,ExerciseA
 60,1,0,125,258,0,0,141,1,2.8,0
 47,1,0,110,275,0,0,118,1,1,0
 50,0,0,110,254,0,0,159,0,0,1
-54,1,0,120,188,0,1,113,0,1.4,0
+
